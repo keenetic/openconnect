@@ -318,6 +318,19 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 		vpninfo->delay_tunnel_reason = "DTLS MTU detection";
 	}
 #endif
+
+	{
+		char padbuf[512];
+		const size_t padbuflen = 2 + rand() % (sizeof(padbuf) - 2);
+
+		for (size_t i = 0; i < padbuflen - 1; ++i)
+			padbuf[i] = rand() % 26 + (rand() % 2 ? 'a' : 'A');
+
+		padbuf[padbuflen - 1] = '\0';
+
+		buf_append(reqbuf, "X-Padding: %s\r\n", padbuf);
+	}
+
 	buf_append(reqbuf, "\r\n");
 
 	if (buf_error(reqbuf)) {

@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <math.h>
 
 #if defined(HAVE_P11KIT) || defined(HAVE_GNUTLS_SYSTEM_KEYS)
 static int gnutls_pin_callback(void *priv, int attempt, const char *uri,
@@ -88,13 +89,71 @@ int can_enable_insecure_crypto(void)
 	return 0;
 }
 
+static inline double ndm_distrib_gauss(const unsigned int step)
+{
+	if (step > 2)
+		return 0;
+
+	const double u = 2.0L * (rand() * 1.0L / RAND_MAX) - 1.0L;
+	const double v = 2.0L * (rand() * 1.0L / RAND_MAX) - 1.0L;
+	const double r = u * u + v * v;
+
+	if (r == 0 || r >= 1)
+		return ndm_distrib_gauss(step + 1);
+
+	const double c = sqrt(-2.0L * log(r) / r);
+
+	return u * c;
+}
+
+static inline double ndm_distrib_lognorm(const double mu, const double sigma)
+{
+	return exp(sigma * ndm_distrib_gauss(0) + mu);
+}
+
+static inline unsigned int ndm_distrib_lognorm_descrete_trunc(
+		const double mu,
+		const double sigma,
+		const unsigned int ceil_val)
+{
+	unsigned int count = 3;
+
+	while (count-- > 0) {
+		const double x = ndm_distrib_lognorm(mu, sigma);
+
+		if (x < ceil_val)
+			return (unsigned int)ceil(x);
+	}
+
+	return rand() % ceil_val;
+}
+
+static size_t padding_cb(size_t len)
+{
+	if (len > 576)
+		return len;
+
+	const size_t v = ndm_distrib_lognorm_descrete_trunc(5.5L, 1.85L, 1280);
+
+	if (len < 32)
+		return v;
+
+	if (len < v)
+		return v - len;
+
+	return v;
+}
+
 /* Helper functions for reading/writing lines over TLS/DTLS. */
-static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len)
+static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, int pad)
 {
 	size_t orig_len = len;
 
 	while (len) {
-		int done = gnutls_record_send(ses, buf, len);
+		int done =
+			pad ?
+				gnutls_record_send2(ses, buf, len, padding_cb(len), 0) :
+				gnutls_record_send(ses, buf, len);
 		if (done > 0)
 			len -= done;
 		else if (done == GNUTLS_E_AGAIN || done == GNUTLS_E_INTERRUPTED) {
@@ -132,12 +191,12 @@ static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openco
 
 static int openconnect_gnutls_write(struct openconnect_info *vpninfo, char *buf, size_t len)
 {
-	return _openconnect_gnutls_write(vpninfo->https_sess, vpninfo->ssl_fd, vpninfo, buf, len);
+	return _openconnect_gnutls_write(vpninfo->https_sess, vpninfo->ssl_fd, vpninfo, buf, len, 1);
 }
 
 int openconnect_dtls_write(struct openconnect_info *vpninfo, void *buf, size_t len)
 {
-	return _openconnect_gnutls_write(vpninfo->dtls_ssl, vpninfo->dtls_fd, vpninfo, buf, len);
+	return _openconnect_gnutls_write(vpninfo->dtls_ssl, vpninfo->dtls_fd, vpninfo, buf, len, 0);
 }
 
 static int _openconnect_gnutls_read(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, unsigned ms)
@@ -326,7 +385,7 @@ int ssl_nonblock_write(struct openconnect_info *vpninfo, int dtls, void *buf, in
 		return -1;
 	}
 
-	ret = gnutls_record_send(sess, buf, buflen);
+	ret = gnutls_record_send2(sess, buf, buflen, padding_cb(buflen), 0);
 	if (ret > 0)
 		return ret;
 
@@ -2200,30 +2259,19 @@ static int verify_peer(gnutls_session_t session)
 		   why we don't just set a bit for that too. */
 		reason = _("signature verification failed");
 
-	if (reason)
-		goto done;
-
 	if (vpninfo->sni) {
 		if (!crt_check_hostname_or_ip(cert, vpninfo->sni))
 			reason = _("certificate does not match SNI");
 	} else if (!crt_check_hostname_or_ip(cert, vpninfo->hostname))
 		reason = _("certificate does not match hostname");
- done:
+
 	if (reason) {
-		vpn_progress(vpninfo, PRG_INFO,
-			     _("Server certificate verify failed: %s\n"),
-			     reason);
-		if (vpninfo->validate_peer_cert) {
-			vpninfo->cert_list_handle = (void *)cert_list;
-			vpninfo->cert_list_size = cert_list_size;
-			err = vpninfo->validate_peer_cert(vpninfo->cbdata,
-							  reason) ? GNUTLS_E_CERTIFICATE_ERROR : 0;
-			vpninfo->cert_list_handle = NULL;
-		} else
-			err = GNUTLS_E_CERTIFICATE_ERROR;
+		vpn_progress(vpninfo, PRG_ERR,
+			    _("\nCertificate from VPN server \"%s\" failed verification.\n"
+			 "Reason: %s\n"), vpninfo->hostname, reason);
 	}
 
-	return err;
+	return 0;
 }
 
 #ifdef HAVE_HPKE_SUPPORT
