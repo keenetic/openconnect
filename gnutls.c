@@ -128,7 +128,7 @@ static inline unsigned int ndm_distrib_lognorm_descrete_trunc(
 	return rand() % ceil_val;
 }
 
-static size_t padding_cb(size_t len)
+static size_t padding_cb__(const size_t len)
 {
 	if (len > 576)
 		return len;
@@ -144,6 +144,24 @@ static size_t padding_cb(size_t len)
 	return v;
 }
 
+static size_t padding_cb_(const size_t len, const size_t left)
+{
+	const size_t pad = padding_cb__(len);
+
+	return left > pad ? pad : left;
+}
+
+static size_t padding_cb(gnutls_session_t ses, const size_t len)
+{
+	const size_t max = gnutls_record_get_max_size(ses);
+	const size_t ovh = gnutls_record_overhead_size(ses);
+
+	if (max <= (ovh + len))
+		return 0;
+
+	return padding_cb_(len, max - ovh - len);
+}
+
 /* Helper functions for reading/writing lines over TLS/DTLS. */
 static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, int pad)
 {
@@ -152,7 +170,7 @@ static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openco
 	while (len) {
 		int done =
 			pad ?
-				gnutls_record_send2(ses, buf, len, padding_cb(len), 0) :
+				gnutls_record_send2(ses, buf, len, padding_cb(ses, len), 0) :
 				gnutls_record_send(ses, buf, len);
 		if (done > 0)
 			len -= done;
@@ -385,7 +403,10 @@ int ssl_nonblock_write(struct openconnect_info *vpninfo, int dtls, void *buf, in
 		return -1;
 	}
 
-	ret = gnutls_record_send2(sess, buf, buflen, padding_cb(buflen), 0);
+	ret =
+		dtls ?
+			gnutls_record_send(sess, buf, buflen) :
+			gnutls_record_send2(sess, buf, buflen, padding_cb(sess, buflen), 0);
 	if (ret > 0)
 		return ret;
 
