@@ -162,6 +162,14 @@ static size_t padding_cb(gnutls_session_t ses, const size_t len)
 	return padding_cb_(len, max - ovh - len);
 }
 
+static int tls_send_(gnutls_session_t ses, const void *data, size_t data_size)
+{
+	if (gnutls_protocol_get_version(ses) != GNUTLS_TLS1_3)
+		return gnutls_record_send(ses, data, data_size);
+
+	return gnutls_record_send2(ses, data, data_size, padding_cb(ses, data_size), 0);
+}
+
 /* Helper functions for reading/writing lines over TLS/DTLS. */
 static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, int pad)
 {
@@ -170,7 +178,7 @@ static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openco
 	while (len) {
 		int done =
 			pad ?
-				gnutls_record_send2(ses, buf, len, padding_cb(ses, len), 0) :
+				tls_send_(ses, buf, len) :
 				gnutls_record_send(ses, buf, len);
 		if (done > 0)
 			len -= done;
@@ -406,7 +414,7 @@ int ssl_nonblock_write(struct openconnect_info *vpninfo, int dtls, void *buf, in
 	ret =
 		dtls ?
 			gnutls_record_send(sess, buf, buflen) :
-			gnutls_record_send2(sess, buf, buflen, padding_cb(sess, buflen), 0);
+			tls_send_(sess, buf, buflen);
 	if (ret > 0)
 		return ret;
 
