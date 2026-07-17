@@ -131,7 +131,7 @@ static inline unsigned int ndm_distrib_lognorm_descrete_trunc(
 static size_t padding_cb__(const size_t len)
 {
 	if (len > 576)
-		return len;
+		return (size_t)(rand() % 200);
 
 	const size_t v = ndm_distrib_lognorm_descrete_trunc(5.5L, 1.85L, 1280);
 
