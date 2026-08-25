@@ -94,8 +94,8 @@ static inline double ndm_distrib_gauss(const unsigned int step)
 	if (step > 2)
 		return 0;
 
-	const double u = 2.0L * (rand() * 1.0L / RAND_MAX) - 1.0L;
-	const double v = 2.0L * (rand() * 1.0L / RAND_MAX) - 1.0L;
+	const double u = 2.0L * (1.0L * openconnect_rand_interval(0, UINT_MAX - 1) / (UINT_MAX - 1)) - 1.0L;
+	const double v = 2.0L * (1.0L * openconnect_rand_interval(0, UINT_MAX - 1) / (UINT_MAX - 1)) - 1.0L;
 	const double r = u * u + v * v;
 
 	if (r == 0 || r >= 1)
@@ -125,13 +125,13 @@ static inline unsigned int ndm_distrib_lognorm_descrete_trunc(
 			return (unsigned int)ceil(x);
 	}
 
-	return rand() % ceil_val;
+	return openconnect_rand_interval(0, ceil_val);
 }
 
 static size_t padding_cb__(const size_t len)
 {
 	if (len > 576)
-		return (size_t)(rand() % 200);
+		return (size_t)openconnect_rand_interval(0, 200);
 
 	const size_t v = ndm_distrib_lognorm_descrete_trunc(5.5L, 1.85L, 1280);
 

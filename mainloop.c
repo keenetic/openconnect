@@ -463,7 +463,7 @@ int keepalive_action(struct keepalive_info *ka, int *timeout)
 
 	/* DPD is bidirectional -- PKT 3 out, PKT 4 back */
 	if (ka->dpd) {
-		time_t due = ka->last_rx + ka->dpd / 2 + rand() % (ka->dpd / 2);
+		time_t due = ka->last_rx + ka->dpd / 2 + ka->dpd_jitter;
 		time_t overdue = ka->last_rx + (2 * ka->dpd);
 
 		/* Peer didn't respond */
@@ -473,12 +473,13 @@ int keepalive_action(struct keepalive_info *ka, int *timeout)
 		/* If we already have DPD outstanding, don't flood. Repeat by
 		   all means, but only after half the DPD period. */
 		if (ka->last_dpd > ka->last_rx)
-			due = ka->last_dpd + ka->dpd / 4 + rand() % (ka->dpd / 4);
+			due = ka->last_dpd + ka->dpd / 4 + (ka->dpd_jitter % (ka->dpd / 4 + 1));
 
 		/* We haven't seen a packet from this host for $DPD seconds.
 		   Prod it to see if it's still alive */
 		if (ka_check_deadline(timeout, now, due)) {
 			ka->last_dpd = now;
+			ka->dpd_jitter = openconnect_rand_interval(0, ka->dpd / 2 + 1);
 			return KA_DPD;
 		}
 	}
@@ -487,8 +488,10 @@ int keepalive_action(struct keepalive_info *ka, int *timeout)
 	   If we haven't sent anything for $KEEPALIVE seconds, send a
 	   dummy packet (which the server will discard) */
 	if (ka->keepalive &&
-	    ka_check_deadline(timeout, now, ka->last_tx + ka->keepalive))
+	    ka_check_deadline(timeout, now, ka->last_tx + ka->keepalive + ka->keepalive_jitter)) {
+		ka->keepalive_jitter = openconnect_rand_interval(0, ka->keepalive / 4 + 1);
 		return KA_KEEPALIVE;
+	}
 
 	return KA_NONE;
 }

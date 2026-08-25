@@ -1770,7 +1770,6 @@ static void fully_up_cb(void *_vpninfo)
 
 #ifndef __native_client__
 	if (use_syslog) {
-		//openlog("openconnect", 0, LOG_DAEMON);
 		vpninfo->progress = syslog_progress;
 	}
 #endif /* !__native_client__ */
@@ -1810,6 +1809,11 @@ int main(int argc, char *argv[])
 	if (!setlocale(LC_ALL, ""))
 		fprintf(stderr,
 			_("WARNING: Cannot set locale: %s\n"), strerror(errno));
+
+	if (!openconnect_rand_init()) {
+		fprintf(stderr, _("Failed to init a CPRNG\n"));
+		exit(1);
+	}
 
 	if (argc > 2 && !strcmp(argv[1], "--autocomplete"))
 		return autocomplete(argc, argv);

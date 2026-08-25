@@ -325,10 +325,14 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 
 	{
 		char padbuf[512];
-		const size_t padbuflen = 2 + rand() % (sizeof(padbuf) - 2);
+		const size_t padbuflen = openconnect_rand_interval(
+			2, sizeof(padbuf) - 1);
 
-		for (size_t i = 0; i < padbuflen - 1; ++i)
-			padbuf[i] = rand() % 26 + (rand() % 2 ? 'a' : 'A');
+		for (size_t i = 0; i < padbuflen - 1; ++i) {
+			padbuf[i] =
+				openconnect_rand_interval(0, 25) +
+				openconnect_rand_interval(0, 1) ? 'a' : 'A';
+		}
 
 		padbuf[padbuflen - 1] = '\0';
 

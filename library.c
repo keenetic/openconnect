@@ -35,6 +35,8 @@
 #include <openssl/bio.h>
 #endif
 
+#include <sys/random.h>
+
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -1928,4 +1930,47 @@ int openconnect_webview_load_changed(struct openconnect_info *vpninfo,
 		return (vpninfo->proto->sso_detect_done)(vpninfo, result);
 
 	return -EOPNOTSUPP;
+}
+
+int openconnect_rand_init()
+{
+	unsigned int seed = 0;
+	const ssize_t r = getrandom(
+		&seed, sizeof(seed), GRND_INSECURE | GRND_NONBLOCK);
+
+	if( r < sizeof(seed) )
+	{
+		return 0;
+	}
+
+	srand(seed);
+
+	return 1;
+}
+
+unsigned int openconnect_rand_interval(
+		const unsigned int min,
+		const unsigned int max)
+{
+	if (max <= min || max == UINT_MAX) {
+		return 0;
+	}
+
+	const unsigned int range = max - min + 1;
+	const unsigned int sec_max = UINT_MAX - UINT_MAX % range;
+	unsigned int val = 0;
+
+	do {
+		const ssize_t r = getrandom(
+			&val, sizeof(val), GRND_INSECURE | GRND_NONBLOCK);
+
+		if( r < sizeof(val) )
+		{
+			const int val2 = rand();
+
+			memcpy(&val, &val2, sizeof(val2));
+		}
+	} while (val >= sec_max);
+
+	return min + val % range;
 }
