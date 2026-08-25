@@ -221,6 +221,7 @@ enum {
 	OPT_MULTICERT_CERT,
 	OPT_MULTICERT_KEY,
 	OPT_MULTICERT_KEY_PASSWORD,
+	OPT_PASSWD
 };
 
 #ifdef __sun__
@@ -323,6 +324,7 @@ static const struct option long_options[] = {
 	OPTION("mca-certificate", 1, OPT_MULTICERT_CERT),
 	OPTION("mca-key", 1, OPT_MULTICERT_KEY),
 	OPTION("mca-key-password", 1, OPT_MULTICERT_KEY_PASSWORD),
+	OPTION("passwd", 1, 'w'),
 	OPTION(NULL, 0, 0)
 };
 
@@ -1768,7 +1770,7 @@ static void fully_up_cb(void *_vpninfo)
 
 #ifndef __native_client__
 	if (use_syslog) {
-		openlog("openconnect", LOG_PID, LOG_DAEMON);
+		//openlog("openconnect", 0, LOG_DAEMON);
 		vpninfo->progress = syslog_progress;
 	}
 #endif /* !__native_client__ */
@@ -1863,8 +1865,11 @@ int main(int argc, char *argv[])
 
 	openconnect_init_ssl();
 
+	openlog("openconnect", 0, LOG_DAEMON);
+
 	vpninfo = openconnect_vpninfo_new("AnyConnect-compatible OpenConnect VPN Agent",
 		validate_peer_cert, NULL, process_auth_form_cb, write_progress, NULL);
+
 	if (!vpninfo) {
 		fprintf(stderr, _("Failed to allocate vpninfo structure\n"));
 		exit(1);
@@ -2107,7 +2112,9 @@ int main(int argc, char *argv[])
 			}
 			break;
 		case 'p':
-			vpninfo->certinfo[0].password = dup_config_arg();
+			free(password);
+			password = dup_config_arg();
+			memset(config_arg, 'X', strlen(password));
 			break;
 		case 'P':
 			proxy = keep_config_arg();
@@ -2152,6 +2159,10 @@ int main(int argc, char *argv[])
 		case OPT_NO_EXTERNAL_AUTH:
 			/* XX: Is this a workaround for a server bug, or a "normal" authentication option? */
 			vpninfo->no_external_auth = 1;
+			break;
+		case 'w':
+			free(password);
+			password = dup_config_arg();
 			break;
 		case 'u':
 			free(username);
@@ -2911,7 +2922,6 @@ static int process_auth_form_cb(void *_vpninfo,
 		} else if (opt->type == OC_FORM_OPT_PASSWORD) {
 			if (password) {
 				opt->_value = password;
-				password = NULL;
 			} else {
 				opt->_value = saved_form_field(vpninfo, form->auth_id, opt->name, NULL);
 				if (!opt->_value)

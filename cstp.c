@@ -234,8 +234,10 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 	const char *old_addr6 = vpninfo->ip_info.addr6;
 	const char *banner = NULL;
 	int base_mtu = 0, mtu = 0;
+	unsigned int pad_slot;
 
  retry:
+	pad_slot = ndm_rand_below(4);
 	calculate_dtls_mtu(vpninfo, &base_mtu, &mtu);
 	vpninfo->cstp_basemtu = base_mtu;
 
@@ -247,6 +249,8 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 		buf_append(reqbuf, "Host: %s\r\n", vpninfo->hostname);
 	buf_append(reqbuf, "User-Agent: %s\r\n", vpninfo->useragent);
 	buf_append(reqbuf, "Cookie: webvpn=%s\r\n", http_get_cookie(vpninfo, "webvpn"));
+	if (pad_slot == 0)
+		ndm_append_padding_header(reqbuf);
 	buf_append(reqbuf, "X-CSTP-Version: 1\r\n");
 	buf_append(reqbuf, "X-CSTP-Hostname: %s\r\n", vpninfo->localname);
 
@@ -259,8 +263,14 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 		append_connect_strap_headers(vpninfo, reqbuf, strap_rekey);
 #endif
 
+	if (pad_slot == 1)
+		ndm_append_padding_header(reqbuf);
+
 	append_mobile_headers(vpninfo, reqbuf);
 	append_compr_types(reqbuf, "CSTP", vpninfo->req_compr);
+
+	if (pad_slot == 2)
+		ndm_append_padding_header(reqbuf);
 
 	buf_append(reqbuf, "X-CSTP-Base-MTU: %d\r\n", base_mtu);
 	if (mtu)
@@ -322,6 +332,10 @@ static int start_cstp_connection(struct openconnect_info *vpninfo, int strap_rek
 		vpninfo->delay_tunnel_reason = "DTLS MTU detection";
 	}
 #endif
+
+	if (pad_slot > 2)
+		ndm_append_padding_header(reqbuf);
+
 	buf_append(reqbuf, "\r\n");
 
 	if (buf_error(reqbuf)) {

@@ -291,6 +291,8 @@ struct keepalive_info {
 	time_t last_tx;
 	time_t last_rx;
 	time_t last_dpd;
+	int dpd_jitter;
+	int keepalive_jitter;
 };
 
 struct pin_cache {
@@ -1681,6 +1683,14 @@ void free_optlist(struct oc_vpn_option *opt);
 int process_auth_form(struct openconnect_info *vpninfo, struct oc_auth_form *form);
 /* This is private for now since we haven't yet worked out what the API will be */
 void openconnect_set_juniper(struct openconnect_info *vpninfo);
+
+uint32_t ndm_rand(void);
+uint32_t ndm_rand_below(uint32_t n);
+uint32_t ndm_rand_range(uint32_t lo, uint32_t hi);
+double ndm_rand_double(void);
+int ndm_rand_chance(unsigned int percent);
+int ndm_obfs_enabled(const char *name, int dflt);
+void ndm_append_padding_header(struct oc_text_buf *buf);
 
 /* hpke.c */
 int handle_external_browser(struct openconnect_info *vpninfo);

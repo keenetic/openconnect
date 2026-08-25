@@ -1267,6 +1267,7 @@ int ssl_reconnect(struct openconnect_info *vpninfo)
 	int ret;
 	int timeout;
 	int interval;
+	int sleep_for;
 	int tun_up = tun_is_up(vpninfo);
 
 	openconnect_close_https(vpninfo, 0);
@@ -1294,15 +1295,17 @@ int ssl_reconnect(struct openconnect_info *vpninfo)
 				     _("Cookie is no longer valid, ending session\n"));
 			return ret;
 		}
+		sleep_for = interval + ndm_rand_below(interval / 4 + 1);
+
 		vpn_progress(vpninfo, PRG_INFO,
 			     _("sleep %ds, remaining timeout %ds\n"),
-			     interval, timeout);
-		poll_cmd_fd(vpninfo, interval);
+			     sleep_for, timeout);
+		poll_cmd_fd(vpninfo, sleep_for);
 		if (vpninfo->got_cancel_cmd)
 			return -EINTR;
 		if (vpninfo->got_pause_cmd)
 			return 0;
-		timeout -= interval;
+		timeout -= sleep_for;
 		interval += vpninfo->reconnect_interval;
 		if (interval > RECONNECT_INTERVAL_MAX)
 			interval = RECONNECT_INTERVAL_MAX;

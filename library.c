@@ -17,6 +17,7 @@
  */
 
 #include <config.h>
+#include <time.h>
 
 #include "openconnect-internal.h"
 
@@ -42,6 +43,144 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <ctype.h>
+
+static uint32_t ndm_rnd_s[4];
+static int ndm_rnd_seeded;
+
+static void ndm_rand_seed(void)
+{
+	int i;
+
+	if (openconnect_random(ndm_rnd_s, sizeof(ndm_rnd_s))) {
+		uint32_t t = (uint32_t)time(NULL);
+		uint32_t p = (uint32_t)(uintptr_t)&i ^ (uint32_t)clock();
+
+		for (i = 0; i < 4; i++)
+			ndm_rnd_s[i] = t * 2654435761u + p * 40503u + i * 2246822519u;
+	}
+
+	if (!(ndm_rnd_s[0] | ndm_rnd_s[1] | ndm_rnd_s[2] | ndm_rnd_s[3]))
+		ndm_rnd_s[0] = 0x9e3779b9u;
+
+	ndm_rnd_seeded = 1;
+}
+
+static inline uint32_t ndm_rotl(const uint32_t x, int k)
+{
+	return (x << k) | (x >> (32 - k));
+}
+
+uint32_t ndm_rand(void)
+{
+	uint32_t r, t;
+
+	if (!ndm_rnd_seeded)
+		ndm_rand_seed();
+
+	r = ndm_rotl(ndm_rnd_s[1] * 5, 7) * 9;
+	t = ndm_rnd_s[1] << 9;
+
+	ndm_rnd_s[2] ^= ndm_rnd_s[0];
+	ndm_rnd_s[3] ^= ndm_rnd_s[1];
+	ndm_rnd_s[1] ^= ndm_rnd_s[2];
+	ndm_rnd_s[0] ^= ndm_rnd_s[3];
+	ndm_rnd_s[2] ^= t;
+	ndm_rnd_s[3] = ndm_rotl(ndm_rnd_s[3], 11);
+
+	return r;
+}
+
+uint32_t ndm_rand_below(uint32_t n)
+{
+	uint32_t limit, v;
+
+	if (n < 2)
+		return 0;
+
+	limit = UINT32_MAX - (UINT32_MAX % n) - 1;
+
+	do {
+		v = ndm_rand();
+	} while (v > limit);
+
+	return v % n;
+}
+
+uint32_t ndm_rand_range(uint32_t lo, uint32_t hi)
+{
+	if (hi <= lo)
+		return lo;
+
+	return lo + ndm_rand_below(hi - lo + 1);
+}
+
+double ndm_rand_double(void)
+{
+	return (ndm_rand() >> 8) * (1.0 / 16777216.0);
+}
+
+int ndm_rand_chance(unsigned int percent)
+{
+	return ndm_rand_below(100) < percent;
+}
+
+int ndm_obfs_enabled(const char *name, int dflt)
+{
+	static struct {
+		const char *name;
+		int val;
+	} cache[8];
+	static unsigned int ncache;
+	const char *v;
+	unsigned int i;
+
+	for (i = 0; i < ncache; i++)
+		if (!strcmp(cache[i].name, name))
+			return cache[i].val;
+
+	v = getenv(name);
+	if (v && *v)
+		dflt = !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' ||
+			 v[0] == 'f' || v[0] == 'F');
+
+	if (ncache < sizeof(cache) / sizeof(cache[0])) {
+		cache[ncache].name = name;
+		cache[ncache].val = dflt;
+		ncache++;
+	}
+
+	return dflt;
+}
+
+void ndm_append_padding_header(struct oc_text_buf *buf)
+{
+	static const char * const names[] = {
+		"X-Padding", "X-Request-Padding", "X-Request-Id",
+		"X-Trace-Id", "X-Correlation-Id", "X-Client-Context",
+	};
+	static const char b64[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	char pad[1024];
+	unsigned int len, i;
+
+	if (!ndm_obfs_enabled("OC_NDM_HTTP_PAD", 1))
+		return;
+
+	if (ndm_rand_chance(25))
+		len = ndm_rand_range(1, sizeof(pad) - 1);
+	else if (ndm_rand_chance(50))
+		len = ndm_rand_range(1, 256);
+	else
+		len = ndm_rand_range(1, 64);
+
+	for (i = 0; i < len; i++)
+		pad[i] = b64[ndm_rand_below(sizeof(b64) - 1)];
+	pad[len] = '\0';
+
+	buf_append(buf, "%s: %s\r\n",
+		   names[ndm_rand_below(sizeof(names) / sizeof(names[0]))],
+		   pad);
+}
 
 struct openconnect_info *openconnect_vpninfo_new(const char *useragent,
 						 openconnect_validate_peer_cert_vfn validate_peer_cert,

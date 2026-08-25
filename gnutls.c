@@ -43,6 +43,8 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <math.h>
+#include <sys/uio.h>
 
 #if defined(HAVE_P11KIT) || defined(HAVE_GNUTLS_SYSTEM_KEYS)
 static int gnutls_pin_callback(void *priv, int attempt, const char *uri,
@@ -88,16 +90,154 @@ int can_enable_insecure_crypto(void)
 	return 0;
 }
 
+static inline double ndm_distrib_gauss(const unsigned int step)
+{
+	if (step > 2)
+		return 0;
+
+	const double u = 2.0L * ndm_rand_double() - 1.0L;
+	const double v = 2.0L * ndm_rand_double() - 1.0L;
+	const double r = u * u + v * v;
+
+	if (r == 0 || r >= 1)
+		return ndm_distrib_gauss(step + 1);
+
+	const double c = sqrt(-2.0L * log(r) / r);
+
+	return u * c;
+}
+
+static inline double ndm_distrib_lognorm(const double mu, const double sigma)
+{
+	return exp(sigma * ndm_distrib_gauss(0) + mu);
+}
+
+static inline unsigned int ndm_distrib_lognorm_descrete_trunc(
+		const double mu,
+		const double sigma,
+		const unsigned int ceil_val)
+{
+	unsigned int count = 3;
+
+	while (count-- > 0) {
+		const double x = ndm_distrib_lognorm(mu, sigma);
+
+		if (x < ceil_val)
+			return (unsigned int)ceil(x);
+	}
+
+	return ndm_rand_below(ceil_val);
+}
+
+static size_t padding_cb__(const size_t len)
+{
+	if (len > 576)
+		return (size_t)ndm_rand_below(200);
+
+	const size_t v = ndm_distrib_lognorm_descrete_trunc(5.5L, 1.85L, 1280);
+
+	if (len < 32)
+		return v;
+
+	if (len < v)
+		return v - len;
+
+	return v;
+}
+
+static size_t padding_cb_(const size_t len, const size_t left)
+{
+	const size_t pad = padding_cb__(len);
+
+	return left > pad ? pad : left;
+}
+
+static size_t padding_cb(gnutls_session_t ses, const size_t len)
+{
+	const size_t max = gnutls_record_get_max_size(ses);
+	const size_t ovh = gnutls_record_overhead_size(ses);
+
+	if (max <= (ovh + len))
+		return 0;
+
+	return padding_cb_(len, max - ovh - len);
+}
+
+static int tls_send_(gnutls_session_t ses, const void *data, size_t data_size)
+{
+	if (!ndm_obfs_enabled("OC_NDM_TLS_PAD", 1) ||
+	    gnutls_protocol_get_version(ses) != GNUTLS_TLS1_3)
+		return gnutls_record_send(ses, data, data_size);
+
+	return gnutls_record_send2(ses, data, data_size, padding_cb(ses, data_size), 0);
+}
+
+static size_t tls_write_chunk(gnutls_session_t ses, size_t len)
+{
+	if (len < 64 ||
+	    gnutls_protocol_get_version(ses) == GNUTLS_TLS1_3 ||
+	    !ndm_obfs_enabled("OC_NDM_TLS_PAD", 1))
+		return len;
+
+	if (!ndm_rand_chance(65))
+		return len;
+
+	return ndm_rand_range(32, len - 1);
+}
+
+static ssize_t ndm_split_push(gnutls_transport_ptr_t ptr, const void *data, size_t len)
+{
+	int fd = (int)(intptr_t)ptr;
+	const char *p = data;
+	size_t first;
+	ssize_t ret, ret2;
+
+	if (len < 64 || (unsigned char)p[0] != 0x16 ||
+	    !ndm_obfs_enabled("OC_NDM_SPLIT", 1))
+		return send(fd, data, len, 0);
+
+	if (ndm_rand_chance(40))
+		first = ndm_rand_range(1, 8);
+	else
+		first = ndm_rand_range(20, len - 20);
+
+	ret = send(fd, p, first, 0);
+	if (ret <= 0 || (size_t)ret < first)
+		return ret;
+
+	ret2 = send(fd, p + first, len - first, 0);
+	if (ret2 <= 0)
+		return ret;
+
+	return ret + ret2;
+}
+
+static ssize_t ndm_vec_push(gnutls_transport_ptr_t ptr, const giovec_t *iov, int iovcnt)
+{
+	return writev((int)(intptr_t)ptr, (const struct iovec *)iov, iovcnt);
+}
+
 /* Helper functions for reading/writing lines over TLS/DTLS. */
-static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len)
+static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, int pad)
 {
 	size_t orig_len = len;
+	size_t chunk = 0;
 
 	while (len) {
-		int done = gnutls_record_send(ses, buf, len);
-		if (done > 0)
+		int done;
+
+		if (pad) {
+			if (!chunk || chunk > len)
+				chunk = tls_write_chunk(ses, len);
+			done = tls_send_(ses, buf, chunk);
+		} else
+			done = gnutls_record_send(ses, buf, len);
+
+		if (done > 0) {
 			len -= done;
-		else if (done == GNUTLS_E_AGAIN || done == GNUTLS_E_INTERRUPTED) {
+			buf += done;
+			chunk = 0;
+		} else if (done == GNUTLS_E_AGAIN || done == GNUTLS_E_INTERRUPTED) {
 			/* Wait for something to happen on the socket, or on cmd_fd */
 			fd_set wr_set, rd_set;
 			int maxfd = fd;
@@ -132,12 +272,12 @@ static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openco
 
 static int openconnect_gnutls_write(struct openconnect_info *vpninfo, char *buf, size_t len)
 {
-	return _openconnect_gnutls_write(vpninfo->https_sess, vpninfo->ssl_fd, vpninfo, buf, len);
+	return _openconnect_gnutls_write(vpninfo->https_sess, vpninfo->ssl_fd, vpninfo, buf, len, 1);
 }
 
 int openconnect_dtls_write(struct openconnect_info *vpninfo, void *buf, size_t len)
 {
-	return _openconnect_gnutls_write(vpninfo->dtls_ssl, vpninfo->dtls_fd, vpninfo, buf, len);
+	return _openconnect_gnutls_write(vpninfo->dtls_ssl, vpninfo->dtls_fd, vpninfo, buf, len, 0);
 }
 
 static int _openconnect_gnutls_read(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len, unsigned ms)
@@ -326,7 +466,10 @@ int ssl_nonblock_write(struct openconnect_info *vpninfo, int dtls, void *buf, in
 		return -1;
 	}
 
-	ret = gnutls_record_send(sess, buf, buflen);
+	ret =
+		dtls ?
+			gnutls_record_send(sess, buf, buflen) :
+			tls_send_(sess, buf, buflen);
 	if (ret > 0)
 		return ret;
 
@@ -2202,30 +2345,19 @@ static int verify_peer(gnutls_session_t session)
 		   why we don't just set a bit for that too. */
 		reason = _("signature verification failed");
 
-	if (reason)
-		goto done;
-
 	if (vpninfo->sni) {
 		if (!crt_check_hostname_or_ip(cert, vpninfo->sni))
 			reason = _("certificate does not match SNI");
 	} else if (!crt_check_hostname_or_ip(cert, vpninfo->hostname))
 		reason = _("certificate does not match hostname");
- done:
+
 	if (reason) {
-		vpn_progress(vpninfo, PRG_INFO,
-			     _("Server certificate verify failed: %s\n"),
-			     reason);
-		if (vpninfo->validate_peer_cert) {
-			vpninfo->cert_list_handle = (void *)cert_list;
-			vpninfo->cert_list_size = cert_list_size;
-			err = vpninfo->validate_peer_cert(vpninfo->cbdata,
-							  reason) ? GNUTLS_E_CERTIFICATE_ERROR : 0;
-			vpninfo->cert_list_handle = NULL;
-		} else
-			err = GNUTLS_E_CERTIFICATE_ERROR;
+		vpn_progress(vpninfo, PRG_ERR,
+			    _("\nCertificate from VPN server \"%s\" failed verification.\n"
+			 "Reason: %s\n"), vpninfo->hostname, reason);
 	}
 
-	return err;
+	return 0;
 }
 
 #ifdef HAVE_HPKE_SUPPORT
@@ -2461,6 +2593,7 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 	gnutls_record_disable_padding(vpninfo->https_sess);
 	gnutls_credentials_set(vpninfo->https_sess, GNUTLS_CRD_CERTIFICATE, vpninfo->https_cred);
 	gnutls_transport_set_ptr(vpninfo->https_sess,(gnutls_transport_ptr_t)(intptr_t)ssl_sock);
+	gnutls_transport_set_push_function(vpninfo->https_sess, ndm_split_push);
 
 	vpn_progress(vpninfo, PRG_INFO, _("SSL negotiation with %s\n"),
 		     vpninfo->hostname);
@@ -2543,6 +2676,8 @@ int cstp_handshake(struct openconnect_info *vpninfo, unsigned init)
 				     gnutls_strerror(err));
 		}
 	}
+
+	gnutls_transport_set_vec_push_function(vpninfo->https_sess, ndm_vec_push);
 
 	gnutls_free(vpninfo->cstp_cipher);
 	vpninfo->cstp_cipher = get_gnutls_cipher(vpninfo->https_sess);

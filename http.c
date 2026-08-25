@@ -1435,4 +1435,8 @@ void http_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *b
 			buf_append(buf, "%s=%s%s", opt->option,
 				      opt->value, opt->next ? "; " : "\r\n");
 	}
+
+	if (vpninfo->proto && vpninfo->proto->name &&
+	    !strcmp(vpninfo->proto->name, "anyconnect"))
+		ndm_append_padding_header(buf);
 }
